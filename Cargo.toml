@@ -5,3 +5,4 @@ authors = ["Tristan Hume <tristan@thume.ca>"]
 
 [dependencies]
 walkdir = "0.1"
+aho-corasick = "0.5.0"

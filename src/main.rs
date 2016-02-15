@@ -1,4 +1,5 @@
 extern crate walkdir;
+extern crate aho_corasick;
 use std::io::prelude::*;
 use std::fs::File;
 use std::fs::Permissions;
@@ -6,7 +7,7 @@ use walkdir::{DirEntry, WalkDir, WalkDirIterator};
 use std::os::unix::fs::PermissionsExt;
 use std::env;
 use std::io;
-use std::ptr;
+use aho_corasick::{Automaton, AcAutomaton};
 
 static LIB_EXTENSIONS : &'static [ &'static str ] = &[".o", ".dylib", ".a", ".exe", ".lib"];
 const BUFFER_SIZE : usize = 4096;
@@ -36,27 +37,15 @@ fn is_hidden(entry: &DirEntry) -> bool {
 }
 
 fn find_paths(path: &str, extension: &str) -> io::Result<Vec<usize>> {
-    let mut f = try!(File::open(path));
-    let mut buf : [u8; BUFFER_SIZE] = [0; BUFFER_SIZE];
-    let mut base_index = 0;
-    let slip = extension.len()-1;
-    let ext_bytes = extension.as_bytes();
+    let aut = AcAutomaton::new(vec!["/Users/","/usr/","/System/"]);
+    let rdr = try!(File::open(path));
 
     let mut results = vec![];
-    loop {
-        unsafe {
-            ptr::copy_nonoverlapping(buf[BUFFER_SIZE-slip..].as_ptr(), buf.as_mut_ptr(), slip);
-        }
-        let bytes_read = try!(f.read(&mut buf[slip..]));
-        if bytes_read == 0 { break; }
-
-        for (i,win) in buf[..(slip+bytes_read)].windows(extension.len()).enumerate() {
-            if win == ext_bytes { results.push(base_index+i-slip) }
-        }
-
-        base_index += bytes_read;
+    for m in aut.stream_find(rdr) {
+        let m = try!(m); // could be an IO error
+        // println!("Pattern '{}' matched at: ({}, {})", aut.pattern(m.pati), m.start, m.end);
+        results.push(m.start);
     }
-
     Ok(results)
 }
 
