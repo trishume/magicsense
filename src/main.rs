@@ -1,31 +1,16 @@
 extern crate walkdir;
+extern crate regex;
+#[macro_use] extern crate lazy_static;
 use std::io::prelude::*;
 use std::fs::File;
-use std::fs::Permissions;
 use walkdir::{DirEntry, WalkDir, WalkDirIterator};
-use std::os::unix::fs::PermissionsExt;
 use std::env;
 use std::io;
-use std::ptr;
+use std::io::BufReader;
+use regex::Regex;
 
-static LIB_EXTENSIONS : &'static [ &'static str ] = &[".o", ".dylib", ".a", ".exe", ".lib"];
-const BUFFER_SIZE : usize = 4096;
-
-fn is_executable(meta: Permissions) -> bool {
-    (meta.mode() & 0b001001001) != 0
-}
-
-fn is_good_path(path: &str) -> bool {
-    if path.contains(".dSYM/Contents/Resources/DWARF/") { return true; }
-    for ext in LIB_EXTENSIONS {
-        if path.ends_with(ext) { return true; }
-    }
-    return false;
-}
-
-fn should_search(entry: &DirEntry) -> bool {
-    entry.path().to_str().map(|p| is_good_path(p)).unwrap_or(false) ||
-    entry.metadata().map(|m| m.is_file() && is_executable(m.permissions())).unwrap_or(false)
+fn has_extension(entry: &DirEntry, ext: &str) -> bool {
+    entry.path().to_str().map(|p| p.ends_with(ext)).unwrap_or(false) && entry.metadata().map(|m| m.is_file()).unwrap_or(false)
 }
 
 fn is_hidden(entry: &DirEntry) -> bool {
@@ -35,36 +20,51 @@ fn is_hidden(entry: &DirEntry) -> bool {
          .unwrap_or(false)
 }
 
-fn find_paths(path: &str, extension: &str) -> io::Result<Vec<usize>> {
-    let mut f = try!(File::open(path));
-    let mut buf : [u8; BUFFER_SIZE] = [0; BUFFER_SIZE];
-    let mut base_index = 0;
-    let slip = extension.len()-1;
-    let ext_bytes = extension.as_bytes();
-
-    let mut results = vec![];
-    loop {
-        unsafe {
-            ptr::copy_nonoverlapping(buf[BUFFER_SIZE-slip..].as_ptr(), buf.as_mut_ptr(), slip);
-        }
-        let bytes_read = try!(f.read(&mut buf[slip..]));
-        if bytes_read == 0 { break; }
-
-        for (i,win) in buf[..(slip+bytes_read)].windows(extension.len()).enumerate() {
-            if win == ext_bytes { results.push(base_index+i-slip) }
-        }
-
-        base_index += bytes_read;
+fn index_file(path: &str) -> io::Result<()> {
+    lazy_static! {
+        static ref FN_RE: Regex = Regex::new(r"(?x)^
+            [^(]*
+            \s([a-zA-Z_?!]+) # Function name
+            \(").unwrap();
     }
+    let f = try!(File::open(path));
+    let f = BufReader::new(f);
 
-    Ok(results)
+    let mut last_fun : String = String::new();
+    let mut last_fun_indent : usize = 0;
+    let mut in_fun = false;
+    let mut last_line_was_fun = false;
+    for line in f.lines() {
+        let line = try!(line);
+        let indent : usize = line.bytes().take_while(|b| b == &(' ' as u8) || b == &('\t' as u8)).count();
+        if indent == line.len() { continue; } // ignore blank lines
+        // println!("{} last_fun: {} at {} in_fun: {} last_line_was_fun: {}", indent, last_fun, last_fun_indent, in_fun, last_line_was_fun);
+
+        if in_fun {
+            if indent > last_fun_indent {
+                if last_line_was_fun {
+                    println!("{}", last_fun);
+                    last_line_was_fun = false;
+                }
+            } else {
+                in_fun = false;
+            }
+        } else if let Some(caps) = FN_RE.captures(&line) {
+            last_fun = String::from(caps.at(1).unwrap());
+            last_fun_indent = indent;
+            in_fun = true;
+            last_line_was_fun = true;
+        }
+    }
+    Ok(())
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     let base_dir: &str = if args.len() > 1 { &args[1] } else { "." };
-    for entry in WalkDir::new(base_dir).into_iter().filter_entry(|e| !is_hidden(e)).filter_map(|e| e.ok()).filter(should_search) {
+    let ext : &str = if args.len() > 2 { &args[2] } else { ".rs" };
+    for entry in WalkDir::new(base_dir).into_iter().filter_entry(|e| !is_hidden(e)).filter_map(|e| e.ok()).filter(|e| has_extension(e, ext)) {
         println!("{}", entry.path().display());
-        println!("{:?}", find_paths(entry.path().to_str().unwrap(),".h").unwrap());
+        index_file(entry.path().to_str().unwrap()).unwrap();
     }
 }
